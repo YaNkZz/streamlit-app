@@ -21,11 +21,19 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import inch
 
 # ------------------ Konfiguration ------------------
-load_dotenv()  # .env laden
-API_URL = os.getenv("LS_API_URL", "").strip()
-LS_USER = os.getenv("LS_USER", "").strip()
-LS_PASSWORD = os.getenv("LS_PASSWORD", "").strip()
-LS_SID = int(os.getenv("LS_SURVEY_ID", "261772"))
+# Erst versuchen, Streamlit-Secrets zu laden
+if "LS_API_URL" in st.secrets:
+    API_URL = st.secrets["LS_API_URL"].strip()
+    LS_USER = st.secrets["LS_USER"].strip()
+    LS_PASSWORD = st.secrets["LS_PASSWORD"].strip()
+    LS_SID = int(st.secrets["LS_SURVEY_ID"])
+else:
+    # Lokaler Fallback: .env-Datei verwenden
+    load_dotenv()
+    API_URL = os.getenv("LS_API_URL", "").strip()
+    LS_USER = os.getenv("LS_USER", "").strip()
+    LS_PASSWORD = os.getenv("LS_PASSWORD", "").strip()
+    LS_SID = int(os.getenv("LS_SURVEY_ID", "0"))
 
 OUTFILE = Path(f"survey_{LS_SID}_responses.json")
 
@@ -55,11 +63,20 @@ st.title("📊 Evaluation Lehrer*innen Coachinggruppen")
 # ------------------ LimeSurvey RPC Helper ------------------
 def _rpc(method: str, params: list):
     """JSON-RPC Call"""
-    r = requests.post(API_URL, json={"method": method, "params": params, "id": 1}, timeout=120)
-    r.raise_for_status()
-    data = r.json()
+    payload = {"method": method, "params": params, "id": 1}
+    try:
+        r = requests.post(API_URL, json=payload, timeout=120)
+        r.raise_for_status()
+        data = r.json()
+    except requests.exceptions.Timeout:
+        raise RuntimeError("Zeitüberschreitung beim Kontakt zum LimeSurvey-Server.")
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"HTTP-Fehler beim RPC-Aufruf: {e}")
+    except ValueError:
+        raise RuntimeError("Antwort des Servers war kein gültiges JSON.")
+
     if data.get("error"):
-        raise RuntimeError(str(data["error"]))
+        raise RuntimeError(f"RPC-Fehler: {data['error']}")
     return data.get("result")
 
 def _decode_export_to_json(result_obj):
@@ -83,11 +100,14 @@ def _decode_export_to_json(result_obj):
         raise RuntimeError("ZIP ohne JSON-Datei")
     return json.loads(raw.decode("utf-8", errors="replace"))
 
-@st.cache_data(show_spinner=False)
+# ------------------ Immer frischer Abruf aus LimeSurvey ------------------
 def fetch_latest_json():
     """Holt aktuelle Antworten, speichert OUTFILE und gibt Python-Objekt zurück."""
     if not (API_URL and LS_USER and LS_PASSWORD and LS_SID):
-        raise RuntimeError("Fehlende LS_API_URL / LS_USER / LS_PASSWORD / LS_SURVEY_ID in .env")
+        raise RuntimeError(
+            "Fehlende Zugangsdaten. Bitte LS_API_URL, LS_USER, LS_PASSWORD, LS_SURVEY_ID "
+            "in Streamlit Secrets oder in einer lokalen .env setzen."
+        )
 
     sess = _rpc("get_session_key", [LS_USER, LS_PASSWORD])
     try:
@@ -104,7 +124,8 @@ def fetch_latest_json():
 
 # ------------------ Daten laden ------------------
 try:
-    raw_json = fetch_latest_json()
+    with st.spinner("Lade aktuelle Daten aus LimeSurvey…"):
+        raw_json = fetch_latest_json()
     st.caption(f"Quelle: Live-Export Survey {LS_SID} → gespeichert als {OUTFILE.name}")
 except Exception as e:
     st.error(f"Fehler beim Abrufen der Daten: {e}")
@@ -209,7 +230,7 @@ if not series_means:
     means_overall = df_sel[EVAL_COLS].mean(numeric_only=True)
     n_overall = int(df_sel.shape[0])
 
-# ------------------ Diagramm (blaue Farben angepasst) ------------------
+# ------------------ Diagramm ------------------
 fig, ax = plt.subplots(figsize=(10, 5.8))
 x = np.arange(len(EVAL_COLS))
 
@@ -218,14 +239,14 @@ if series_means:
     k = len(labels_present)
     width = min(0.8 / max(k, 1), 0.35)
     offsets = np.linspace(-(k-1)/2, (k-1)/2, k) * width
-    
+
     color_map = {
-        "Sitzungen 1–3": "#6baed6",        # hellblau
-        "Eintages-Kompaktkurs": "#6baed6", # hellblau
-        "Sitzungen 4–6": "#2171b5",        # dunkelblau
-        "Nachtreffen": "#2171b5"           # dunkelblau
+        "Sitzungen 1–3": "#6baed6",
+        "Eintages-Kompaktkurs": "#6baed6",
+        "Sitzungen 4–6": "#2171b5",
+        "Nachtreffen": "#2171b5"
     }
-    
+
     for j, lab in enumerate(labels_present):
         vals = [series_means[lab].get(c, np.nan) for c in EVAL_COLS]
         ax.bar(
@@ -238,13 +259,7 @@ if series_means:
 else:
     width = 0.5
     vals = [means_overall.get(c, np.nan) for c in EVAL_COLS]
-    ax.bar(
-        x,
-        vals,
-        width,
-        label=f"Gesamt (n={n_overall})",
-        color="#2171b5"
-    )
+    ax.bar(x, vals, width, label=f"Gesamt (n={n_overall})", color="#2171b5")
 
 ax.set_ylabel("Mittelwert")
 ax.set_title(f"Evaluation der Coachinggruppe ({selected})" + (" – nach Erhebungszeitpunkten" if series_means else ""))
