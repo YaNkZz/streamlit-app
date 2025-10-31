@@ -111,7 +111,8 @@ def fetch_latest_json():
 
     sess = _rpc("get_session_key", [LS_USER, LS_PASSWORD])
     try:
-        res = _rpc("export_responses", [sess, LS_SID, "json", None, "all", "code"])
+        # WICHTIG: "full" statt "code" für Antworttexte
+        res = _rpc("export_responses", [sess, LS_SID, "json", None, "all", "full"])
     finally:
         try:
             _rpc("release_session_key", [sess])
