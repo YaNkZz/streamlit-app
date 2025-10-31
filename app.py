@@ -21,14 +21,12 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import inch
 
 # ------------------ Konfiguration ------------------
-# Erst versuchen, Streamlit-Secrets zu laden
 if "LS_API_URL" in st.secrets:
     API_URL = st.secrets["LS_API_URL"].strip()
     LS_USER = st.secrets["LS_USER"].strip()
     LS_PASSWORD = st.secrets["LS_PASSWORD"].strip()
     LS_SID = int(st.secrets["LS_SURVEY_ID"])
 else:
-    # Lokaler Fallback: .env-Datei verwenden
     load_dotenv()
     API_URL = os.getenv("LS_API_URL", "").strip()
     LS_USER = os.getenv("LS_USER", "").strip()
@@ -37,7 +35,6 @@ else:
 
 OUTFILE = Path(f"survey_{LS_SID}_responses.json")
 
-# kurze X-Achsen-Labels
 EVAL_LABELS = {
     "Evaluation[SQ001]": "Relevanz Themen",
     "Evaluation[SQ002]": "Konstruktiver Austausch",
@@ -49,7 +46,6 @@ EVAL_LABELS = {
 }
 EVAL_COLS = list(EVAL_LABELS.keys())
 
-# bevorzugte Reihenfolge der Stufen in Plot/Report
 STAGE_ORDER = [
     "Sitzungen 1–3",
     "Sitzungen 4–6",
@@ -62,7 +58,6 @@ st.title("📊 Evaluation Lehrer*innen Coachinggruppen")
 
 # ------------------ LimeSurvey RPC Helper ------------------
 def _rpc(method: str, params: list):
-    """JSON-RPC Call"""
     payload = {"method": method, "params": params, "id": 1}
     try:
         r = requests.post(API_URL, json=payload, timeout=120)
@@ -74,13 +69,11 @@ def _rpc(method: str, params: list):
         raise RuntimeError(f"HTTP-Fehler beim RPC-Aufruf: {e}")
     except ValueError:
         raise RuntimeError("Antwort des Servers war kein gültiges JSON.")
-
     if data.get("error"):
         raise RuntimeError(f"RPC-Fehler: {data['error']}")
     return data.get("result")
 
 def _decode_export_to_json(result_obj):
-    """export_responses Ergebnis (Base64/ZIP/JSON) in Python-Objekt dekodieren"""
     if isinstance(result_obj, (dict, list)):
         return result_obj
     if isinstance(result_obj, str):
@@ -99,38 +92,6 @@ def _decode_export_to_json(result_obj):
                     return json.loads(zf.read(nm).decode("utf-8", errors="replace"))
         raise RuntimeError("ZIP ohne JSON-Datei")
     return json.loads(raw.decode("utf-8", errors="replace"))
-
-# ------------------ Immer frischer Abruf aus LimeSurvey ------------------
-def fetch_latest_json():
-    """Holt aktuelle Antworten, speichert OUTFILE und gibt Python-Objekt zurück."""
-    if not (API_URL and LS_USER and LS_PASSWORD and LS_SID):
-        raise RuntimeError(
-            "Fehlende Zugangsdaten. Bitte LS_API_URL, LS_USER, LS_PASSWORD, LS_SURVEY_ID "
-            "in Streamlit Secrets oder in einer lokalen .env setzen."
-        )
-
-    sess = _rpc("get_session_key", [LS_USER, LS_PASSWORD])
-    try:
-        # WICHTIG: "full" statt "code" für Antworttexte
-        res = _rpc("export_responses", [sess, LS_SID, "json", None, "all", "full"])
-    finally:
-        try:
-            _rpc("release_session_key", [sess])
-        except Exception:
-            pass
-
-    data = _decode_export_to_json(res)
-    OUTFILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    return data
-
-# ------------------ Daten laden ------------------
-try:
-    with st.spinner("Lade aktuelle Daten aus LimeSurvey…"):
-        raw_json = fetch_latest_json()
-    st.caption(f"Quelle: Live-Export Survey {LS_SID} → gespeichert als {OUTFILE.name}")
-except Exception as e:
-    st.error(f"Fehler beim Abrufen der Daten: {e}")
-    st.stop()
 
 def normalize_records(obj):
     if isinstance(obj, list):
@@ -156,6 +117,63 @@ def normalize_records(obj):
         else:
             norm.append(item)
     return norm
+
+# ------------------ Immer frischer Abruf aus LimeSurvey ------------------
+def fetch_latest_json():
+    """Holt aktuelle Antworten, ersetzt nur bei 'Kennung' die Antworttexte."""
+    if not (API_URL and LS_USER and LS_PASSWORD and LS_SID):
+        raise RuntimeError(
+            "Fehlende Zugangsdaten. Bitte LS_API_URL, LS_USER, LS_PASSWORD, LS_SURVEY_ID "
+            "in Streamlit Secrets oder in einer lokalen .env setzen."
+        )
+
+    sess = _rpc("get_session_key", [LS_USER, LS_PASSWORD])
+    try:
+        # Hauptdaten: Code-Modus (Standard)
+        res_code = _rpc("export_responses", [sess, LS_SID, "json", None, "all", "code"])
+        data_code = _decode_export_to_json(res_code)
+
+        # Zweiter Export: Full-Modus (nur für Kennung)
+        res_full = _rpc("export_responses", [sess, LS_SID, "json", None, "all", "full"])
+        data_full = _decode_export_to_json(res_full)
+
+        # Records normalisieren
+        full_records = normalize_records(data_full)
+        code_records = normalize_records(data_code)
+
+        def extract_kennung(d):
+            if isinstance(d, dict):
+                for k, v in d.items():
+                    if "Kennung" in k:
+                        return v
+            return None
+
+        # Falls gleiche Länge: Kennung austauschen
+        if len(full_records) == len(code_records):
+            for i in range(len(code_records)):
+                k_full = extract_kennung(full_records[i])
+                if k_full:
+                    for k in list(code_records[i].keys()):
+                        if "Kennung" in k:
+                            code_records[i][k] = k_full
+
+        OUTFILE.write_text(json.dumps({"responses": code_records}, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"responses": code_records}
+
+    finally:
+        try:
+            _rpc("release_session_key", [sess])
+        except Exception:
+            pass
+
+# ------------------ Daten laden ------------------
+try:
+    with st.spinner("Lade aktuelle Daten aus LimeSurvey…"):
+        raw_json = fetch_latest_json()
+    st.caption(f"Quelle: Live-Export Survey {LS_SID} → gespeichert als {OUTFILE.name}")
+except Exception as e:
+    st.error(f"Fehler beim Abrufen der Daten: {e}")
+    st.stop()
 
 records = normalize_records(raw_json)
 df = pd.DataFrame.from_records(records)
@@ -186,7 +204,6 @@ for c in EVAL_COLS:
 df["WieVielSitzungenFort"] = pd.to_numeric(df["WieVielSitzungenFort"], errors="coerce")
 df["WelcheSitzungenKompa"] = pd.to_numeric(df["WelcheSitzungenKompa"], errors="coerce")
 
-# ------------------ Erhebungszeitpunkt bestimmen ------------------
 def row_stage_label(row):
     wv = row.get("WieVielSitzungenFort")
     if pd.notna(wv) and int(wv) in (1, 2):
@@ -239,7 +256,7 @@ if series_means:
     labels_present = [lab for lab in STAGE_ORDER if lab in series_means]
     k = len(labels_present)
     width = min(0.8 / max(k, 1), 0.35)
-    offsets = np.linspace(-(k-1)/2, (k-1)/2, k) * width
+    offsets = np.linspace(-(k - 1) / 2, (k - 1) / 2, k) * width
 
     color_map = {
         "Sitzungen 1–3": "#6baed6",
@@ -263,14 +280,14 @@ else:
     ax.bar(x, vals, width, label=f"Gesamt (n={n_overall})", color="#2171b5")
 
 ax.set_ylabel("Mittelwert")
-ax.set_title(f"Evaluation der Coachinggruppe ({selected})" + (" – nach Erhebungszeitpunkten" if series_means else ""))
+ax.set_title(f"Evaluation der Coachinggruppe ({selected})" +
+             (" – nach Erhebungszeitpunkten" if series_means else ""))
 ax.set_xticks(x)
 ax.set_xticklabels([EVAL_LABELS[c] for c in EVAL_COLS], rotation=20, ha="right")
 ax.legend(loc="best")
 plt.tight_layout()
 st.pyplot(fig)
 
-# ------------------ Info n ------------------
 if series_means:
     info = " · ".join([f"{lab}: n={series_n[lab]}" for lab in [lab for lab in STAGE_ORDER if lab in series_means]])
     st.info(f"Teilnahmen: {info}")
@@ -310,14 +327,14 @@ def build_pdf_bytes(kennung, fig, series_means, series_n, means_overall=None, n_
     story = []
 
     story.append(Paragraph(f"Bericht zur Kennung {kennung}", styles["Title"]))
-    story.append(Spacer(1, 0.15*inch))
+    story.append(Spacer(1, 0.15 * inch))
 
     if series_means:
         info = " · ".join([f"{lab}: <b>n={series_n[lab]}</b>" for lab in [lab for lab in STAGE_ORDER if lab in series_means]])
         story.append(Paragraph(f"Teilnahmen: {info}", styles["Normal"]))
     else:
         story.append(Paragraph(f"Teilnahmen gesamt (ohne Stufenangabe): <b>n={n_overall}</b>", styles["Normal"]))
-    story.append(Spacer(1, 0.2*inch))
+    story.append(Spacer(1, 0.2 * inch))
 
     img_buf = io.BytesIO()
     fig.savefig(img_buf, format="png", bbox_inches="tight", dpi=200)
@@ -325,8 +342,8 @@ def build_pdf_bytes(kennung, fig, series_means, series_n, means_overall=None, n_
     img_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     img_tmp.write(img_buf.getvalue())
     img_tmp.flush()
-    story.append(Image(img_tmp.name, width=6.7*inch, height=4.2*inch))
-    story.append(Spacer(1, 0.25*inch))
+    story.append(Image(img_tmp.name, width=6.7 * inch, height=4.2 * inch))
+    story.append(Spacer(1, 0.25 * inch))
 
     if series_means:
         for lab in [lab for lab in STAGE_ORDER if lab in series_means]:
@@ -337,7 +354,7 @@ def build_pdf_bytes(kennung, fig, series_means, series_n, means_overall=None, n_
                     story.append(Paragraph(f"- {a}", styles["Normal"]))
             else:
                 story.append(Paragraph("Keine Anmerkungen.", styles["Normal"]))
-            story.append(Spacer(1, 0.15*inch))
+            story.append(Spacer(1, 0.15 * inch))
     else:
         story.append(Paragraph("<b>Gesamt</b>", styles["Heading2"]))
         notes = ann["Anmerkung"].tolist()
