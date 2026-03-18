@@ -261,6 +261,7 @@ else:
     vals = [means_overall.get(c, np.nan) for c in EVAL_COLS]
     ax.bar(x, vals, width, label=f"Gesamt (n={n_overall})", color="#2171b5")
 
+ax.set_ylim(0, 5)
 ax.set_ylabel("Mittelwert")
 ax.set_title(f"Evaluation der Coachinggruppe ({selected})" + (" – nach Erhebungszeitpunkten" if series_means else ""))
 ax.set_xticks(x)
