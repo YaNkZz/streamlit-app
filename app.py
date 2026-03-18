@@ -57,6 +57,19 @@ STAGE_ORDER = [
     "Nachtreffen",
 ]
 
+FOOTER_TEXT = (
+    "Die zu bewertenden Aussagen lauteten: "
+    "1. Die Themen der Coachinggruppe waren für mich relevant – "
+    "2. Der Austausch unter den Teilnehmerinnen und Teilnehmern der Coachinggruppe war konstruktiv – "
+    "3. Ich habe etwas für mich gelernt – "
+    "4. Ich fühlte mich durch die Coachinggruppe entlastet – "
+    "5. Die Moderation der Coachinggruppe war gut – "
+    "6. Ich glaube, dass ich Elemente aus der Coachinggruppe in meinem Schulalltag umsetzen kann – "
+    "7. Die Coachinggruppe empfand ich insgesamt als wertvoll für mich. "
+    "Jede Aussage konnte auf einer Skala von 0 = \u201estimmt überhaupt nicht\u201c "
+    "bis 5 = \u201estimmt genau\u201c bewertet werden."
+)
+
 st.set_page_config(page_title="Evaluation Dashboard", layout="centered")
 st.title("📊 Evaluation Lehrer*innen Coachinggruppen")
 
@@ -304,6 +317,10 @@ else:
     else:
         st.write("Keine Anmerkungen.")
 
+# ------------------ Skalenhinweis ------------------
+st.markdown("---")
+st.caption(FOOTER_TEXT)
+
 # ------------------ PDF-Export ------------------
 def build_pdf_bytes(kennung, fig, series_means, series_n, means_overall=None, n_overall=None):
     styles = getSampleStyleSheet()
@@ -346,6 +363,10 @@ def build_pdf_bytes(kennung, fig, series_means, series_n, means_overall=None, n_
                 story.append(Paragraph(f"- {a}", styles["Normal"]))
         else:
             story.append(Paragraph("Keine Anmerkungen.", styles["Normal"]))
+
+    # ------------------ Skalenhinweis im PDF ------------------
+    story.append(Spacer(1, 0.3*inch))
+    story.append(Paragraph(FOOTER_TEXT, styles["Normal"]))
 
     pdf_buf = io.BytesIO()
     doc = SimpleDocTemplate(pdf_buf, pagesize=A4)
