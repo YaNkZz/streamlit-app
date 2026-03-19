@@ -15,20 +15,18 @@ import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 import os
 
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import inch
 
 # ------------------ Konfiguration ------------------
-# Erst versuchen, Streamlit-Secrets zu laden
 if "LS_API_URL" in st.secrets:
     API_URL = st.secrets["LS_API_URL"].strip()
     LS_USER = st.secrets["LS_USER"].strip()
     LS_PASSWORD = st.secrets["LS_PASSWORD"].strip()
     LS_SID = int(st.secrets["LS_SURVEY_ID"])
 else:
-    # Lokaler Fallback: .env-Datei verwenden
     load_dotenv()
     API_URL = os.getenv("LS_API_URL", "").strip()
     LS_USER = os.getenv("LS_USER", "").strip()
@@ -37,7 +35,6 @@ else:
 
 OUTFILE = Path(f"survey_{LS_SID}_responses.json")
 
-# kurze X-Achsen-Labels
 EVAL_LABELS = {
     "Evaluation[SQ001]": "Relevanz Themen",
     "Evaluation[SQ002]": "Konstruktiver Austausch",
@@ -49,7 +46,6 @@ EVAL_LABELS = {
 }
 EVAL_COLS = list(EVAL_LABELS.keys())
 
-# bevorzugte Reihenfolge der Stufen in Plot/Report
 STAGE_ORDER = [
     "Sitzungen 1–3",
     "Sitzungen 4–6",
@@ -75,7 +71,6 @@ st.title("📊 Evaluation Lehrer*innen Coachinggruppen")
 
 # ------------------ LimeSurvey RPC Helper ------------------
 def _rpc(method: str, params: list):
-    """JSON-RPC Call"""
     payload = {"method": method, "params": params, "id": 1}
     try:
         r = requests.post(API_URL, json=payload, timeout=120)
@@ -87,13 +82,11 @@ def _rpc(method: str, params: list):
         raise RuntimeError(f"HTTP-Fehler beim RPC-Aufruf: {e}")
     except ValueError:
         raise RuntimeError("Antwort des Servers war kein gültiges JSON.")
-
     if data.get("error"):
         raise RuntimeError(f"RPC-Fehler: {data['error']}")
     return data.get("result")
 
 def _decode_export_to_json(result_obj):
-    """export_responses Ergebnis (Base64/ZIP/JSON) in Python-Objekt dekodieren"""
     if isinstance(result_obj, (dict, list)):
         return result_obj
     if isinstance(result_obj, str):
@@ -103,7 +96,6 @@ def _decode_export_to_json(result_obj):
             return json.loads(result_obj)
     else:
         raise RuntimeError("export_responses: Unerwartetes Format")
-
     bio = io.BytesIO(raw)
     if zipfile.is_zipfile(bio):
         with zipfile.ZipFile(bio) as zf:
@@ -113,15 +105,12 @@ def _decode_export_to_json(result_obj):
         raise RuntimeError("ZIP ohne JSON-Datei")
     return json.loads(raw.decode("utf-8", errors="replace"))
 
-# ------------------ Immer frischer Abruf aus LimeSurvey ------------------
 def fetch_latest_json():
-    """Holt aktuelle Antworten, speichert OUTFILE und gibt Python-Objekt zurück."""
     if not (API_URL and LS_USER and LS_PASSWORD and LS_SID):
         raise RuntimeError(
             "Fehlende Zugangsdaten. Bitte LS_API_URL, LS_USER, LS_PASSWORD, LS_SURVEY_ID "
             "in Streamlit Secrets oder in einer lokalen .env setzen."
         )
-
     sess = _rpc("get_session_key", [LS_USER, LS_PASSWORD])
     try:
         res = _rpc("export_responses", [sess, LS_SID, "json", None, "all", "code"])
@@ -130,7 +119,6 @@ def fetch_latest_json():
             _rpc("release_session_key", [sess])
         except Exception:
             pass
-
     data = _decode_export_to_json(res)
     OUTFILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return data
@@ -158,7 +146,6 @@ def normalize_records(obj):
             recs = []
     else:
         recs = []
-
     norm = []
     for item in recs:
         if isinstance(item, dict) and isinstance(item.get("answers"), dict):
@@ -290,8 +277,12 @@ if series_means:
 else:
     st.info(f"Teilnahmen gesamt (ohne Stufenangabe): n={n_overall}")
 
-# ------------------ Anmerkungen ------------------
-st.subheader("💬 Anmerkungen")
+# ------------------ Skalenhinweis (Dashboard) ------------------
+st.markdown("---")
+st.caption(FOOTER_TEXT)
+
+# ------------------ Anmerkungen (Dashboard) ------------------
+st.subheader("Anmerkungen")
 ann = df_sel.copy()
 ann["Anmerkung"] = ann["Anmerkung"].astype(str).str.strip()
 ann = ann[ann["Anmerkung"].notna() & (ann["Anmerkung"] != "")]
@@ -317,24 +308,27 @@ else:
     else:
         st.write("Keine Anmerkungen.")
 
-# ------------------ Skalenhinweis ------------------
-st.markdown("---")
-st.caption(FOOTER_TEXT)
-
 # ------------------ PDF-Export ------------------
 def build_pdf_bytes(kennung, fig, series_means, series_n, means_overall=None, n_overall=None):
     styles = getSampleStyleSheet()
     story = []
 
+    # --- Seite 1: Titel, Teilnahmen, Grafik, Skalenhinweis ---
     story.append(Paragraph(f"Bericht zur Kennung {kennung}", styles["Title"]))
-    story.append(Spacer(1, 0.15*inch))
+    story.append(Spacer(1, 0.15 * inch))
 
     if series_means:
-        info = " · ".join([f"{lab}: <b>n={series_n[lab]}</b>" for lab in [lab for lab in STAGE_ORDER if lab in series_means]])
+        info = " · ".join([
+            f"{lab}: <b>n={series_n[lab]}</b>"
+            for lab in STAGE_ORDER if lab in series_means
+        ])
         story.append(Paragraph(f"Teilnahmen: {info}", styles["Normal"]))
     else:
-        story.append(Paragraph(f"Teilnahmen gesamt (ohne Stufenangabe): <b>n={n_overall}</b>", styles["Normal"]))
-    story.append(Spacer(1, 0.2*inch))
+        story.append(Paragraph(
+            f"Teilnahmen gesamt (ohne Stufenangabe): <b>n={n_overall}</b>",
+            styles["Normal"]
+        ))
+    story.append(Spacer(1, 0.2 * inch))
 
     img_buf = io.BytesIO()
     fig.savefig(img_buf, format="png", bbox_inches="tight", dpi=200)
@@ -342,18 +336,16 @@ def build_pdf_bytes(kennung, fig, series_means, series_n, means_overall=None, n_
     img_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     img_tmp.write(img_buf.getvalue())
     img_tmp.flush()
-    story.append(Image(img_tmp.name, width=6.7*inch, height=4.2*inch))
-    story.append(Spacer(1, 0.25*inch))
+    story.append(Image(img_tmp.name, width=6.7 * inch, height=4.2 * inch))
+    story.append(Spacer(1, 0.25 * inch))
 
-    # ------------------ Skalenhinweis direkt unter Grafik ------------------
+    # Skalenhinweis direkt unter die Grafik
     story.append(Paragraph(FOOTER_TEXT, styles["Normal"]))
 
-    # ------------------ Seitenumbruch vor Anmerkungen ------------------
-    from reportlab.platypus import PageBreak
+    # --- Seite 2: Anmerkungen ---
     story.append(PageBreak())
-
     story.append(Paragraph("Anmerkungen", styles["Title"]))
-    story.append(Spacer(1, 0.2*inch))
+    story.append(Spacer(1, 0.2 * inch))
 
     if series_means:
         for lab in [lab for lab in STAGE_ORDER if lab in series_means]:
@@ -364,7 +356,7 @@ def build_pdf_bytes(kennung, fig, series_means, series_n, means_overall=None, n_
                     story.append(Paragraph(f"- {a}", styles["Normal"]))
             else:
                 story.append(Paragraph("Keine Anmerkungen.", styles["Normal"]))
-            story.append(Spacer(1, 0.15*inch))
+            story.append(Spacer(1, 0.15 * inch))
     else:
         story.append(Paragraph("<b>Gesamt</b>", styles["Heading2"]))
         notes = ann["Anmerkung"].tolist()
