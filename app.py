@@ -345,6 +345,16 @@ def build_pdf_bytes(kennung, fig, series_means, series_n, means_overall=None, n_
     story.append(Image(img_tmp.name, width=6.7*inch, height=4.2*inch))
     story.append(Spacer(1, 0.25*inch))
 
+    # ------------------ Skalenhinweis direkt unter Grafik ------------------
+    story.append(Paragraph(FOOTER_TEXT, styles["Normal"]))
+
+    # ------------------ Seitenumbruch vor Anmerkungen ------------------
+    from reportlab.platypus import PageBreak
+    story.append(PageBreak())
+
+    story.append(Paragraph("Anmerkungen", styles["Title"]))
+    story.append(Spacer(1, 0.2*inch))
+
     if series_means:
         for lab in [lab for lab in STAGE_ORDER if lab in series_means]:
             story.append(Paragraph(f"<b>{lab}</b>", styles["Heading2"]))
@@ -363,10 +373,6 @@ def build_pdf_bytes(kennung, fig, series_means, series_n, means_overall=None, n_
                 story.append(Paragraph(f"- {a}", styles["Normal"]))
         else:
             story.append(Paragraph("Keine Anmerkungen.", styles["Normal"]))
-
-    # ------------------ Skalenhinweis im PDF ------------------
-    story.append(Spacer(1, 0.3*inch))
-    story.append(Paragraph(FOOTER_TEXT, styles["Normal"]))
 
     pdf_buf = io.BytesIO()
     doc = SimpleDocTemplate(pdf_buf, pagesize=A4)
